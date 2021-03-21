@@ -35,23 +35,19 @@ async def socket_handler(client_reader, client_writer):
     server_reader, server_writer = await asyncio.open_connection(getHost(host), port)
     if is_https_proxy:
         client_writer.write(b'HTTP/1.1 200 Connection Established\r\n\r\n')
-        await client_writer.drain()
     else:
         server_writer.write(data)
-        await server_writer.drain()
-    try:
-        # use this if you wanna keep the connetion alive util the client/server close it
-        #task = asyncio.create_task(pip(client_reader, server_writer))
-        # close the connection if it lives for 2 min
-        task = asyncio.create_task(asyncio.wait_for(pip(client_reader, server_writer), timeout=120.0))
-        tasks.append(task)
-        task = asyncio.create_task(pip(server_reader, client_writer))
-        tasks.append(task)
-    except Exception as e:
-        print(e)
-        pass
+    # use this if you wanna keep the connetion alive util the client/server close it
+    #task = asyncio.create_task(pip(client_reader, server_writer))
+    # close the connection if it lives for 2 min
+    task = asyncio.create_task(asyncio.wait_for(pip(client_reader, server_writer), timeout=120.0))
+    tasks.append(task)
+    task = asyncio.create_task(pip(server_reader, client_writer))
+    tasks.append(task)
+    
 async def pip(from_reader, to_writer):
     try:
+        await to_writer.drain()
         data = await from_reader.read(1024)
         while data:
             to_writer.write(data)
@@ -76,14 +72,13 @@ async def main():
         socket_handler, '0.0.0.0', 443)
     addr = server.sockets[0].getsockname()
     print(f'Serving on {addr}')
-    loop = asyncio.get_event_loop()
     task = asyncio.create_task(serve_forever(server))
     tasks.append(task)
+    loop = asyncio.get_event_loop()
     inp = await loop.run_in_executor(None, input, 'Enter anything to stop.\r\n')
     for task in tasks:
         task.cancel()
-    #await asyncio.sleep(1)
-    #loop.stop()
+
 def getHost(sni):
     host = hosts.get(sni, sni)
     return host
