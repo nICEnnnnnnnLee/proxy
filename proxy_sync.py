@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import socket, threading, re
+import socket, threading, re, select
 import sni_helper
 
 TIME_OUT_ERR = socket.timeout
@@ -51,11 +51,19 @@ def socket_handler(clientSock, addr):
         else:
             serverSock.send(data)
         serverSock.settimeout(5)
-        
+        '''
         t1 = threading.Thread(target=fromTo, args=(clientSock, serverSock), name='thread-%s-toServer'%sni)
         t2 = threading.Thread(target=fromTo, args=(serverSock, clientSock), name='thread-%s-toClient'%sni)
-        t1.start(); t2.start(); t1.join(); t2.join()
-    except:
+        t1.start(); t2.start(); #t1.join(); t2.join()
+        '''
+        fdset = [clientSock, serverSock]
+        while not stop:
+            r, w, e = select.select(fdset, [], [], 5)
+            if clientSock in r:
+                if serverSock.send(clientSock.recv(1024)) <= 0: break
+            if serverSock in r:
+                if clientSock.send(serverSock.recv(1024)) <= 0: break
+    except Exception as e:
         pass
     finally:
         print(f'{sni} connection closed')
