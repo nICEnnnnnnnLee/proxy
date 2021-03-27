@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import asyncio, sys, re
+import asyncio, sys, re, socket, struct
 import sni_helper
 
 async def socket_handler(client_reader, client_writer):
@@ -10,9 +10,39 @@ async def socket_handler(client_reader, client_writer):
     if not data:
         return
     #addr = writer.get_extra_info('peername')
-    is_https_proxy = False
-        
-    if data.startswith(b'CONNECT'):
+    is_https_proxy = False; is_socks5_proxy = False
+
+    if data == b'\x05\x01\x00':
+        try:
+            # 1. no auth https://tools.ietf.org/html/rfc1928#page-3
+            client_writer.write(b"\x05\x00")
+            await client_writer.drain()
+            # 2. https://tools.ietf.org/html/rfc1928#page-4
+            data = await client_reader.readexactly(4)
+            mode = data[1]
+            addrtype = data[3]
+            # 3. reply https://tools.ietf.org/html/rfc1928#page-5
+            # Command not support          b"\x05\x07\x00\x01"
+            # Address type not supported   b"\x05\x08\x00\x01"
+            # Connection refused           b"\x05\x05\x00\x01\x00\x00\x00\x00\x00\x00"
+            if mode == 1:  # 1. Tcp connect
+                # print('addrtype', addrtype)
+                if addrtype == 1:       # IPv4
+                    host = socket.inet_ntoa(await client_reader.readexactly(4))
+                elif addrtype == 3:     # Domain name
+                    addr_len = await client_reader.readexactly(1)[0]
+                    host = await client_reader.readexactly(addr_len)
+                port = struct.unpack('>H', await client_reader.readexactly(2))[0]
+                # 构建回复
+                reply = b"\x05\x00\x00\x01"
+                is_socks5_proxy = True
+            else:
+                client_writer.write(b"\x05\x07\x00\x01")  # Command not supported
+                await client_writer.drain()
+        except:
+            client_writer.close()
+            return
+    elif data.startswith(b'CONNECT'):
         head = data.decode('latin1')
         search = re.search(r'^CONNECT ([^:]+)(?::([0-9]+))? HTTP[0-9/\.]+\r\n', head)
         if search:
@@ -35,6 +65,10 @@ async def socket_handler(client_reader, client_writer):
     server_reader, server_writer = await asyncio.open_connection(getHost(host), port)
     if is_https_proxy:
         client_writer.write(b'HTTP/1.1 200 Connection Established\r\n\r\n')
+    elif is_socks5_proxy:
+        local_host, local_port = server_writer.get_extra_info('sockname')
+        reply += socket.inet_aton(local_host) + struct.pack(">H", local_port)
+        client_writer.write(reply)
     else:
         server_writer.write(data)
     # use this if you wanna keep the connetion alive util the client/server close it

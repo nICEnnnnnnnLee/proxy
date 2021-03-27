@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import socket, threading, re, select
+import socket, threading, re, select, struct
 import sni_helper
 
 TIME_OUT_ERR = socket.timeout
@@ -17,9 +17,37 @@ def socket_handler(clientSock, addr):
     data = recv(clientSock)
     if not data:
         return
-    is_https_proxy = False
-        
-    if data.startswith(b'CONNECT'):
+    is_https_proxy = False; is_socks5_proxy = False
+    if data == b'\x05\x01\x00':
+        try:
+            # 1. no auth https://tools.ietf.org/html/rfc1928#page-3
+            clientSock.send(b"\x05\x00")
+            # 2. https://tools.ietf.org/html/rfc1928#page-4
+            data = recv(clientSock, 4)
+            mode = data[1]
+            addrtype = data[3]
+            # 3. reply https://tools.ietf.org/html/rfc1928#page-5
+            # Command not support          b"\x05\x07\x00\x01"
+            # Address type not supported   b"\x05\x08\x00\x01"
+            # Connection refused           b"\x05\x05\x00\x01\x00\x00\x00\x00\x00\x00"
+            if mode == 1:  # 1. Tcp connect
+                # print('addrtype', addrtype)
+                if addrtype == 1:       # IPv4
+                    sni = socket.inet_ntoa(recv(clientSock, 4))
+                elif addrtype == 3:     # Domain name
+                    addr_len = recv(clientSock, 1)[0]
+                    sni = recv(clientSock, addr_len)
+                port = struct.unpack('>H', recv(clientSock, 2))[0]
+                # 构建回复
+                reply = b"\x05\x00\x00\x01"
+                is_socks5_proxy = True
+            else:
+                clientSock.send(b"\x05\x07\x00\x01")
+        except Exception as e:
+            print(e)
+            clientSock.close()
+            return
+    elif data.startswith(b'CONNECT'):
         head = data.decode('latin1')
         search = re.search(r'^CONNECT ([^:]+)(?::([0-9]+))? HTTP[0-9/\.]+\r\n', head)
         if search:
@@ -48,6 +76,10 @@ def socket_handler(clientSock, addr):
         serverSock.connect((getHost(sni), port))
         if is_https_proxy:
             clientSock.send(b'HTTP/1.1 200 Connection Established\r\n\r\n')
+        elif is_socks5_proxy:
+            local_host, local_port = serverSock.getsockname()
+            reply += socket.inet_aton(local_host) + struct.pack(">H", local_port)
+            clientSock.send(reply)
         else:
             serverSock.send(data)
         serverSock.settimeout(5)
